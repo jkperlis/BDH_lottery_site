@@ -7,6 +7,8 @@ from datetime import datetime
 from collections import defaultdict
 
 # --- SETTINGS ---
+### IMPORTANT
+### Change these to the folder and filename pattern of your snapshot CSVs and change snapshot year to 2026***
 SNAPSHOT_FOLDER = "/Users/jkperlis/Brown/Datadesk/Lottery Data"
 SNAPSHOT_PREFIX = "spring_room_selection_"
 SNAPSHOT_YEAR = 2025
@@ -60,9 +62,9 @@ def normalize_name(name):
 def parse_snapshot_time_from_filename(filename, year):
     """
     Expected filename pattern:
-        spring_housing_selection_<month>_<day>_<HHMM>.csv
+        spring_room_selection_<month>_<day>_<HHMM>.csv
     Example:
-        spring_housing_selection_04_08_0900.csv
+        spring_room_selection_04_08_0900.csv
     """
     fn = os.path.basename(filename)
     pattern = r"^" + re.escape(SNAPSHOT_PREFIX) + r"(\d{1,2})_(\d{1,2})_(\d{4})\.csv$"

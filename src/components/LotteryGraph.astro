@@ -892,7 +892,7 @@ if (!dataUrl) {
           ? Math.min(340, 20 + selectionLabel.length * 10)
           : Math.min(280, 16 + selectionLabel.length * 8.35);        
         const labelX = Math.min(Math.max(plotLeft, selectionX - labelWidth / 2), plotRight - labelWidth);
-        const labelY = plotTop + 12;
+        const labelY = plotTop -36;
 
         root.appendChild(
           makeSvgEl("rect", {
