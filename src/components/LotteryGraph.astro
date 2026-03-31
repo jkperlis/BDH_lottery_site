@@ -1,0 +1,1033 @@
+---
+/*
+  Housing availability line chart for Astro.
+
+  Expected data:
+  - One row per Snapshot_Time
+  - CSV file with columns like:
+      Snapshot_Time
+      Avail_COED_1, Total_COED_1, Pct_COED_1
+      Avail_S_COED_1, Total_S_COED_1, Pct_S_COED_1
+      ...
+      Avail_ALL_5, Total_ALL_5, Pct_ALL_5
+      Avail_S_ALL_5, Total_S_ALL_5, Pct_S_ALL_5
+
+  Usage example:
+    <HousingLotteryChart dataUrl="/data/housing_timeseries.csv" client:load />
+*/
+
+const { dataUrl } = Astro.props;
+
+if (!dataUrl) {
+  throw new Error("HousingLotteryChart.astro requires a dataUrl prop.");
+}
+---
+
+<section class="housing reveal">
+  <div class="container">
+    <div class="housing-chart-shell">
+      <!-- Controls row -->
+      <div class="housing-chart-controls" aria-label="Housing chart filters">
+        <label class="housing-chart-filter">
+          <span>Gender</span>
+          <select id="housing-chart-filter-gender">
+            <option value="ALL">All</option>
+            <option value="COED">CoEd</option>
+            <option value="COEDMALE">CoEd + Male</option>
+            <option value="COEDFEMALE">CoEd + Female</option>
+          </select>
+        </label>
+
+        <label class="housing-chart-filter">
+          <span>Group size</span>
+          <select id="housing-chart-filter-group">
+            <option value="1">1</option>
+            <option value="2">2</option>
+            <option value="3">3</option>
+            <option value="4">4</option>
+            <option value="5">5</option>
+          </select>
+        </label>
+
+        <label class="housing-chart-filter">
+          <span>Selection day</span>
+          <select id="housing-chart-filter-day">
+            <option value="">Loading…</option>
+          </select>
+        </label>
+
+        <label class="housing-chart-filter">
+          <span>Selection time</span>
+          <select id="housing-chart-filter-time">
+            <option value="">Loading…</option>
+          </select>
+        </label>
+      </div>
+
+      <div class="housing-chart-card">
+        <div class="housing-chart-header">
+          <div id="housingChartHeadline" class="housing-chart-headline">--.-% Available</div>
+          <div id="housingChartSubheadline" class="housing-chart-subheadline"></div>
+          <div id="housingChartLegend" class="housing-chart-legend">
+            <span class="housing-chart-legend-item">
+              <span class="housing-chart-legend-swatch housing-chart-legend-swatch--rooms"></span>
+              All Matching Rooms
+            </span>
+            <span class="housing-chart-legend-item">
+              <span class="housing-chart-legend-swatch housing-chart-legend-swatch--suites"></span>
+              Matching Suites
+            </span>
+          </div>
+        </div>
+
+        <div class="housing-chart-plot-wrap">
+          <svg
+            id="housingChartSvg"
+            class="housing-chart-svg"
+            viewBox="0 0 1200 400"
+            preserveAspectRatio="xMidYMid meet"
+            aria-label="Housing availability chart"
+          ></svg>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<script
+  is:inline
+  define:vars={{ dataUrl }}
+>
+  (function () {
+    const svg = document.getElementById("housingChartSvg");
+    const headlineEl = document.getElementById("housingChartHeadline");
+    const subheadlineEl = document.getElementById("housingChartSubheadline");
+
+    const genderEl = document.getElementById("housing-chart-filter-gender");
+    const groupEl = document.getElementById("housing-chart-filter-group");
+    const dayEl = document.getElementById("housing-chart-filter-day");
+    const timeEl = document.getElementById("housing-chart-filter-time");
+
+    if (!svg || svg.dataset.initialized === "true") return;
+    svg.dataset.initialized = "true";
+
+    const COLORS = {
+      bg: "#f0efec",
+      grid: "rgba(40,40,40,0.12)",
+      axis: "rgba(35,35,35,0.82)",
+      text: "#202020",
+      muted: "rgba(35,35,35,0.68)",
+      headline: "#ff6238",
+      rooms: "#c837d1",
+      suites: "#315df5",
+      selectionLine: "rgba(35,35,35,0.92)",
+      selectionLabelBg: "rgba(35,35,35,0.92)",
+      selectionLabelText: "#ffffff"
+    };
+
+    const DISPLAY_DAY_SHIFT = -2;
+
+    const GENDER_LABELS = {
+      ALL: "All",
+      COED: "CoEd",
+      COEDMALE: "CoEd + Male",
+      COEDFEMALE: "CoEd + Female"
+    };
+
+    function getChartMargin() {
+      if (isMobileChart()) {
+        return {
+          top: 38,
+          right: 100,
+          bottom: 172,
+          left: 88
+        };
+      }
+
+      return {
+        top: 38,
+        right: 84,
+        bottom: 154,
+        left: 88
+      };
+    }
+
+    let parsedRows = [];
+    let selectionIndex = 0;
+
+    function isMobileChart() {
+      return window.matchMedia("(max-width: 720px)").matches;
+    }
+
+    function chartFontSizes() {
+      if (isMobileChart()) {
+        return {
+          yTick: 20,
+          xTick: 18,
+          axisLabel: 22,
+          selectionLabel: 20
+        };
+      }
+
+      return {
+        yTick: 16,
+        xTick: 14,
+        axisLabel: 18,
+        selectionLabel: 16
+      };
+    }
+
+    function safeNumber(value) {
+      if (value == null || value === "") return 0;
+      const n = Number(String(value).replace(/,/g, "").trim());
+      return Number.isFinite(n) ? n : 0;
+    }
+
+    function normalizePct(value) {
+      let n = safeNumber(value);
+      if (n <= 1 && n >= 0) n = n * 100;
+      return n;
+    }
+
+    function parseDateLoose(value) {
+      if (!value) return null;
+
+      if (value instanceof Date && !Number.isNaN(value.getTime())) return value;
+
+      if (typeof value === "number") {
+        const excelEpoch = new Date(Date.UTC(1899, 11, 30));
+        const d = new Date(excelEpoch.getTime() + value * 86400000);
+        if (!Number.isNaN(d.getTime())) return d;
+      }
+
+      const raw = String(value).trim();
+      if (!raw) return null;
+
+      let d = new Date(raw);
+      if (!Number.isNaN(d.getTime())) return d;
+
+      d = new Date(raw.replace(" ", "T"));
+      if (!Number.isNaN(d.getTime())) return d;
+
+      return null;
+    }
+
+    function shiftDateForDisplay(date, dayShift = 0) {
+      if (!(date instanceof Date) || Number.isNaN(date.getTime())) return null;
+      const d = new Date(date);
+      d.setDate(d.getDate() + dayShift);
+      return d;
+    }
+
+    function fmtDateLabel(date) {
+      const shifted = shiftDateForDisplay(date, DISPLAY_DAY_SHIFT);
+      if (!(shifted instanceof Date) || Number.isNaN(shifted.getTime())) return "";
+      return new Intl.DateTimeFormat(undefined, {
+        month: "short",
+        day: "numeric",
+        hour: "numeric",
+        minute: "2-digit"
+      }).format(shifted);
+    }
+
+    function fmtSelectionLabel(date) {
+      const shifted = shiftDateForDisplay(date, DISPLAY_DAY_SHIFT);
+      if (!(shifted instanceof Date) || Number.isNaN(shifted.getTime())) return "Selection Time";
+      return `Selection Time: ${new Intl.DateTimeFormat(undefined, {
+        month: "short",
+        day: "numeric",
+        hour: "numeric",
+        minute: "2-digit"
+      }).format(shifted)}`;
+    }
+
+   function fmtDayValue(date) {
+      const shifted = shiftDateForDisplay(date, DISPLAY_DAY_SHIFT);
+      return [
+        shifted.getFullYear(),
+        String(shifted.getMonth() + 1).padStart(2, "0"),
+        String(shifted.getDate()).padStart(2, "0")
+      ].join("-");
+    }
+
+    function fmtDayLabel(date) {
+      const shifted = shiftDateForDisplay(date, DISPLAY_DAY_SHIFT);
+
+      // Adjust weekday forward by one day to reflect 2026 calendar alignment
+      const weekdayAdjusted = new Date(shifted);
+      weekdayAdjusted.setDate(weekdayAdjusted.getDate() + 1);
+
+      const weekday = new Intl.DateTimeFormat(undefined, {
+        weekday: "short"
+      }).format(weekdayAdjusted);
+
+      const monthDay = new Intl.DateTimeFormat(undefined, {
+        month: "short",
+        day: "numeric"
+      }).format(shifted);
+
+      return `${weekday}, ${monthDay}`;
+    }
+
+    function fmtTimeValue(date) {
+      return date.toISOString();
+    }
+
+    function fmtTimeLabel(date) {
+      return new Intl.DateTimeFormat(undefined, {
+        hour: "numeric",
+        minute: "2-digit"
+      }).format(date);
+    }
+
+    function csvToObjects(text) {
+      const rows = [];
+      let headers = null;
+      let current = "";
+      let record = [];
+      let inQuotes = false;
+
+      function pushCell() {
+        record.push(current);
+        current = "";
+      }
+
+      function pushRecord() {
+        if (!headers) {
+          headers = record.map((x) => String(x).trim());
+        } else {
+          const obj = {};
+          headers.forEach((h, i) => {
+            obj[h] = record[i] ?? "";
+          });
+          const hasAnyValue = Object.values(obj).some((v) => String(v).trim() !== "");
+          if (hasAnyValue) rows.push(obj);
+        }
+        record = [];
+      }
+
+      for (let i = 0; i < text.length; i++) {
+        const ch = text[i];
+        const next = text[i + 1];
+
+        if (ch === '"') {
+          if (inQuotes && next === '"') {
+            current += '"';
+            i += 1;
+          } else {
+            inQuotes = !inQuotes;
+          }
+        } else if (ch === "," && !inQuotes) {
+          pushCell();
+        } else if ((ch === "\n" || ch === "\r") && !inQuotes) {
+          if (ch === "\r" && next === "\n") i += 1;
+          pushCell();
+          pushRecord();
+        } else {
+          current += ch;
+        }
+      }
+
+      if (current.length > 0 || record.length > 0) {
+        pushCell();
+        pushRecord();
+      }
+
+      return rows;
+    }
+
+    function roomAvailField(gender, group) {
+      return `Avail_${gender}_${group}`;
+    }
+
+    function roomPctField(gender, group) {
+      return `Pct_${gender}_${group}`;
+    }
+
+    function suiteAvailField(gender, group) {
+      return `Avail_S_${gender}_${group}`;
+    }
+
+    function roomTotalField(gender, group) {
+      return `Total_${gender}_${group}`;
+    }
+
+    function suiteTotalField(gender, group) {
+      return `Total_S_${gender}_${group}`;
+    }
+
+    function hydrateRows(rows) {
+      return rows
+        .map((row, index) => {
+          const snapshotRaw = row.Snapshot_Time ?? row.snapshot_time ?? row.snapshot ?? "";
+          const snapshotDate = parseDateLoose(snapshotRaw);
+
+          return {
+            ...row,
+            __index: index,
+            __snapshotRaw: snapshotRaw,
+            __snapshotDate: snapshotDate,
+            __dayKey: snapshotDate ? fmtDayValue(snapshotDate) : ""
+          };
+        })
+        .filter((row) => row.__snapshotRaw !== "")
+        .sort((a, b) => {
+          const ta = a.__snapshotDate ? a.__snapshotDate.getTime() : a.__index;
+          const tb = b.__snapshotDate ? b.__snapshotDate.getTime() : b.__index;
+          return ta - tb;
+        });
+    }
+
+    function sameSeriesValues(a, b) {
+      const keys = Object.keys(a).filter((k) =>
+        /^(Avail_|Total_|Pct_)/.test(k)
+      );
+
+      return keys.every((k) => String(a[k] ?? "") === String(b[k] ?? ""));
+    }
+
+    function coerceToSelectionWindow(rows) {
+      const allowedStartDate = new Date(2025, 3, 8);   // Apr 8, 2025
+      const allowedEndDate = new Date(2025, 3, 10);    // Apr 10, 2025
+
+      const openHour = 10;
+      const openMinute = 0;
+      const closeHour = 16;
+      const closeMinute = 45;
+
+      const cleaned = [];
+
+      for (const row of rows) {
+        if (!row.__snapshotDate) continue;
+
+        const d = new Date(row.__snapshotDate);
+        const dayOnly = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+
+        // keep only Apr 8–10 inclusive
+        if (dayOnly < allowedStartDate || dayOnly > allowedEndDate) continue;
+
+        const minutes = d.getHours() * 60 + d.getMinutes();
+        const openMinutes = openHour * 60 + openMinute;
+        const closeMinutes = closeHour * 60 + closeMinute;
+
+        // before opening on a valid day -> coerce to 10:00 AM
+        if (minutes < openMinutes) {
+          d.setHours(openHour, openMinute, 0, 0);
+        }
+
+        // after closing -> drop
+        if (minutes > closeMinutes) continue;
+
+        cleaned.push({
+          ...row,
+          __snapshotDate: d,
+          __snapshotRaw: d.toISOString(),
+          __dayKey: fmtDayValue(d)
+        });
+      }
+
+      cleaned.sort((a, b) => a.__snapshotDate - b.__snapshotDate);
+
+      // drop consecutive duplicates after coercion / after-hours carryover
+      const deduped = [];
+      for (const row of cleaned) {
+        const prev = deduped[deduped.length - 1];
+        if (
+          prev &&
+          prev.__snapshotDate.getTime() === row.__snapshotDate.getTime() &&
+          sameSeriesValues(prev, row)
+        ) {
+          continue;
+        }
+
+        // also drop exact repeated state even at adjacent times
+        if (prev && sameSeriesValues(prev, row)) {
+          continue;
+        }
+
+        deduped.push(row);
+      }
+
+      return deduped;
+    }
+
+    function getGenderValue() {
+      const v = genderEl?.value || "ALL";
+      return ["ALL", "COED", "COEDMALE", "COEDFEMALE"].includes(v) ? v : "ALL";
+    }
+
+    function getGroupValue() {
+      const v = String(groupEl?.value || "1").trim();
+      return ["1", "2", "3", "4", "5", "9"].includes(v) ? v : "1";
+    }
+
+    function getSelectedDay() {
+      return String(dayEl?.value || "").trim();
+    }
+
+    function getSelectedTime() {
+      return String(timeEl?.value || "").trim();
+    }
+
+    function populateDayOptions() {
+      if (!dayEl) return;
+
+      const seen = new Map();
+      parsedRows.forEach((row) => {
+        if (!row.__snapshotDate || !row.__dayKey) return;
+        if (!seen.has(row.__dayKey)) {
+          seen.set(row.__dayKey, fmtDayLabel(row.__snapshotDate));
+        }
+      });
+
+      const current = dayEl.value;
+      dayEl.innerHTML = "";
+
+      for (const [value, label] of seen.entries()) {
+        const opt = document.createElement("option");
+        opt.value = value;
+        opt.textContent = label;
+        dayEl.appendChild(opt);
+      }
+
+      if (current && seen.has(current)) {
+        dayEl.value = current;
+      } else if (dayEl.options.length > 0) {
+        dayEl.selectedIndex = 0;
+      }
+    }
+
+    function populateTimeOptions() {
+      if (!timeEl) return;
+
+      const selectedDay = getSelectedDay();
+      const current = timeEl.value;
+
+      const rowsForDay = parsedRows.filter((row) => row.__dayKey === selectedDay);
+
+      timeEl.innerHTML = "";
+
+      rowsForDay.forEach((row) => {
+        const opt = document.createElement("option");
+        opt.value = row.__snapshotRaw;
+        opt.textContent = row.__snapshotDate ? fmtTimeLabel(row.__snapshotDate) : row.__snapshotRaw;
+        timeEl.appendChild(opt);
+      });
+
+      if (current && rowsForDay.some((row) => row.__snapshotRaw === current)) {
+        timeEl.value = current;
+      } else if (timeEl.options.length > 0) {
+        timeEl.selectedIndex = 0;
+      }
+    }
+
+    function findSelectionIndex() {
+      if (!parsedRows.length) return 0;
+
+      const selectedTime = getSelectedTime();
+      if (selectedTime) {
+        const exactIdx = parsedRows.findIndex((row) => String(row.__snapshotRaw).trim() === selectedTime);
+        if (exactIdx >= 0) return exactIdx;
+
+        const requestedDate = parseDateLoose(selectedTime);
+        if (requestedDate) {
+          const requestedMs = requestedDate.getTime();
+          let bestIdx = 0;
+          let bestDiff = Infinity;
+
+          parsedRows.forEach((row, idx) => {
+            const d = row.__snapshotDate;
+            if (!d) return;
+            const diff = Math.abs(d.getTime() - requestedMs);
+            if (diff < bestDiff) {
+              bestDiff = diff;
+              bestIdx = idx;
+            }
+          });
+
+          return bestIdx;
+        }
+      }
+
+      const selectedDay = getSelectedDay();
+      if (selectedDay) {
+        const firstForDay = parsedRows.findIndex((row) => row.__dayKey === selectedDay);
+        if (firstForDay >= 0) return firstForDay;
+      }
+
+      return 0;
+    }
+
+    function clearSvg(el) {
+      while (el.firstChild) el.removeChild(el.firstChild);
+    }
+
+    function makeSvgEl(tag, attrs = {}) {
+      const el = document.createElementNS("http://www.w3.org/2000/svg", tag);
+      Object.entries(attrs).forEach(([k, v]) => {
+        el.setAttribute(k, String(v));
+      });
+      return el;
+    }
+
+    function linePath(points) {
+      if (!points.length) return "";
+      let d = `M ${points[0].x} ${points[0].y}`;
+      for (let i = 1; i < points.length; i++) {
+        d += ` L ${points[i].x} ${points[i].y}`;
+      }
+      return d;
+    }
+
+    function pctHeadlineColor(pct) {
+      if (!Number.isFinite(pct)) return "#666666";
+      if (pct >= 90) return "#1a9850";
+      if (pct >= 75) return "#66bd63";
+      if (pct >= 60) return "#a6d96a";
+      if (pct >= 45) return "#fdae61";
+      if (pct >= 25) return "#f46d43";
+      if (pct >= 10) return "#e85b3b";
+      return "#d73027";
+    }
+
+    function render() {
+      if (!parsedRows.length) {
+        clearSvg(svg);
+        headlineEl.textContent = "--.-% Available";
+        headlineEl.style.color = pctHeadlineColor(selectedPoint.pct);
+        subheadlineEl.textContent = "No data loaded";
+        return;
+      }
+
+      const gender = getGenderValue();
+      const group = getGroupValue();
+      const FONTS = chartFontSizes();
+      const CHART_MARGIN = getChartMargin();
+
+      selectionIndex = findSelectionIndex();
+      if (selectionIndex < 0) selectionIndex = 0;
+      if (selectionIndex >= parsedRows.length) selectionIndex = parsedRows.length - 1;
+
+      const roomAvailCol = roomAvailField(gender, group);
+      const roomPctCol = roomPctField(gender, group);
+      const suiteAvailCol = suiteAvailField(gender, group);
+      const roomTotalCol = roomTotalField(gender, group);
+      const suiteTotalCol = suiteTotalField(gender, group);
+
+      const series = parsedRows.map((row, idx) => {
+        const rooms = safeNumber(row[roomAvailCol]);
+        const suites = safeNumber(row[suiteAvailCol]);
+        const pct = normalizePct(row[roomPctCol]);
+        const roomTotal = safeNumber(row[roomTotalCol]);
+        const suiteTotal = safeNumber(row[suiteTotalCol]);
+
+        return {
+          idx,
+          date: row.__snapshotDate,
+          label: row.__snapshotDate ? fmtDateLabel(row.__snapshotDate) : String(row.__snapshotRaw),
+          rooms,
+          suites,
+          pct,
+          roomTotal,
+          suiteTotal
+        };
+      });
+
+      const selectedPoint = series[selectionIndex] || series[0];
+      const pctText = Number.isFinite(selectedPoint.pct) ? `${selectedPoint.pct.toFixed(1)}% Available` : "--.-% Available";
+
+      headlineEl.textContent = pctText;
+      headlineEl.style.color = pctHeadlineColor(selectedPoint.pct);
+      subheadlineEl.textContent = `${GENDER_LABELS[gender] || gender} · Group ${group} · ${selectedPoint.label}`;
+
+      clearSvg(svg);
+
+      const viewBox = svg.viewBox.baseVal;
+      const width = viewBox && viewBox.width ? viewBox.width : 1200;
+      const height = viewBox && viewBox.height ? viewBox.height : 620;
+
+      const plotLeft = CHART_MARGIN.left;
+      const plotRight = width - CHART_MARGIN.right;
+      const plotTop = CHART_MARGIN.top;
+      const plotBottom = height - CHART_MARGIN.bottom;
+      const plotWidth = plotRight - plotLeft;
+      const plotHeight = plotBottom - plotTop;
+
+      const yMaxData = Math.max(
+        1,
+        ...series.map((d) => d.rooms),
+        ...series.map((d) => d.suites)
+      );
+
+      const yMax = yMaxData <= 6
+        ? Math.max(1, Math.ceil(yMaxData))
+        : Math.ceil(yMaxData / 5) * 5;
+
+      const yTicks = yMax <= 6 ? yMax : 6;
+
+      function xScale(i) {
+        if (series.length <= 1) return plotLeft + plotWidth / 2;
+        return plotLeft + (i / (series.length - 1)) * plotWidth;
+      }
+
+      function yScale(v) {
+        return plotBottom - (v / yMax) * plotHeight;
+      }
+
+      const root = makeSvgEl("g");
+      svg.appendChild(root);
+
+      root.appendChild(
+        makeSvgEl("rect", {
+          x: 0,
+          y: 0,
+          width,
+          height,
+          fill: COLORS.bg,
+          rx: 16,
+          ry: 16
+        })
+      );
+
+      for (let i = 0; i <= yTicks; i++) {
+        const tickValue = (yMax / yTicks) * i;
+        const y = yScale(tickValue);
+
+        root.appendChild(
+          makeSvgEl("line", {
+            x1: plotLeft,
+            y1: y,
+            x2: plotRight,
+            y2: y,
+            stroke: COLORS.grid,
+            "stroke-width": 1
+          })
+        );
+
+        const tickText = makeSvgEl("text", {
+          x: plotLeft - 14,
+          y: y + 5,
+          fill: COLORS.axis,
+          "font-size": FONTS.yTick,
+          "font-family": "system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
+          "text-anchor": "end"
+        });
+        tickText.textContent = String(Math.round(tickValue));
+        root.appendChild(tickText);
+      }
+
+      series.forEach((d, i) => {
+        const x = xScale(i);
+
+        root.appendChild(
+          makeSvgEl("line", {
+            x1: x,
+            y1: plotTop,
+            x2: x,
+            y2: plotBottom,
+            stroke: COLORS.grid,
+            "stroke-width": 1
+          })
+        );
+
+        const tickText = makeSvgEl("text", {
+          x,
+          y: plotBottom + 32,
+          fill: COLORS.axis,
+          "font-size": FONTS.xTick,
+          "font-family": "system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
+          transform: `rotate(45 ${x} ${plotBottom + 32})`,
+          "text-anchor": "start"
+        });
+        tickText.textContent = d.label;
+        root.appendChild(tickText);
+      });
+
+      const yAxisLabel = makeSvgEl("text", {
+        x: 28,
+        y: plotTop + plotHeight / 2,
+        fill: COLORS.axis,
+        "font-size": FONTS.axisLabel,
+        "font-family": "system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
+        transform: `rotate(-90 28 ${plotTop + plotHeight / 2})`,
+        "text-anchor": "middle"
+      });
+      yAxisLabel.textContent = "Available Rooms";
+      root.appendChild(yAxisLabel);
+
+      const xAxisLabel = makeSvgEl("text", {
+        x: plotLeft + plotWidth / 2,
+        y: height - 18,
+        fill: COLORS.axis,
+        "font-size": FONTS.axisLabel,
+        "font-family": "system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
+        "text-anchor": "middle"
+      });
+      xAxisLabel.textContent = "Time";
+      root.appendChild(xAxisLabel);
+
+      const roomPoints = series.map((d, i) => ({ x: xScale(i), y: yScale(d.rooms) }));
+      const suitePoints = series.map((d, i) => ({ x: xScale(i), y: yScale(d.suites) }));
+
+      root.appendChild(
+        makeSvgEl("path", {
+          d: linePath(roomPoints),
+          fill: "none",
+          stroke: COLORS.rooms,
+          "stroke-width": 5,
+          "stroke-linecap": "round",
+          "stroke-linejoin": "round"
+        })
+      );
+
+      root.appendChild(
+        makeSvgEl("path", {
+          d: linePath(suitePoints),
+          fill: "none",
+          stroke: COLORS.suites,
+          "stroke-width": 5,
+          "stroke-linecap": "round",
+          "stroke-linejoin": "round"
+        })
+      );
+
+      roomPoints.forEach((pt) => {
+        root.appendChild(
+          makeSvgEl("circle", {
+            cx: pt.x,
+            cy: pt.y,
+            r: 5.5,
+            fill: COLORS.rooms
+          })
+        );
+      });
+
+      suitePoints.forEach((pt) => {
+        root.appendChild(
+          makeSvgEl("circle", {
+            cx: pt.x,
+            cy: pt.y,
+            r: 5.5,
+            fill: COLORS.suites
+          })
+        );
+      });
+
+      const selectionX = xScale(selectionIndex);
+        root.appendChild(
+          makeSvgEl("line", {
+            x1: selectionX,
+            y1: plotTop,
+            x2: selectionX,
+            y2: plotBottom,
+            stroke: COLORS.selectionLine,
+            "stroke-width": 3
+          })
+        );
+
+        const selectionLabel = fmtSelectionLabel(selectedPoint.date);
+        const labelWidth = isMobileChart()
+          ? Math.min(340, 20 + selectionLabel.length * 10)
+          : Math.min(280, 16 + selectionLabel.length * 8.35);        
+        const labelX = Math.min(Math.max(plotLeft, selectionX - labelWidth / 2), plotRight - labelWidth);
+        const labelY = plotTop + 12;
+
+        root.appendChild(
+          makeSvgEl("rect", {
+            x: labelX,
+            y: labelY,
+            width: labelWidth,
+            height: isMobileChart() ? 40 : 34,
+            rx: 10,
+            ry: 10,
+            fill: COLORS.selectionLabelBg
+          })
+        );
+
+        const selectionText = makeSvgEl("text", {
+          x: labelX + 12,
+          y: labelY + (isMobileChart() ? 25 : 22),
+          fill: COLORS.selectionLabelText,
+          "font-size": FONTS.selectionLabel,
+          "font-family": "system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
+          "font-weight": "700"
+        });
+        selectionText.textContent = selectionLabel;
+        root.appendChild(selectionText);
+    }
+
+    async function loadData() {
+      const res = await fetch(dataUrl, { cache: "no-store" });
+      if (!res.ok) {
+        throw new Error(`Failed to fetch chart data: ${res.status} ${res.statusText}`);
+      }
+
+      const text = await res.text();
+      const rawRows = csvToObjects(text);
+      parsedRows = coerceToSelectionWindow(hydrateRows(rawRows));
+
+      populateDayOptions();
+      populateTimeOptions();
+      render();
+    }
+
+    function bindControls() {
+      genderEl?.addEventListener("change", render);
+      groupEl?.addEventListener("change", render);
+
+      dayEl?.addEventListener("change", () => {
+        populateTimeOptions();
+        render();
+      });
+
+      timeEl?.addEventListener("change", render);
+
+      window.addEventListener("housing-chart-resize", render);
+      window.addEventListener("resize", render);
+    }
+
+    bindControls();
+    loadData().catch((err) => {
+      console.error("Housing chart init error:", err);
+      headlineEl.textContent = "--.-% Available";
+      subheadlineEl.textContent = "Unable to load chart data";
+      clearSvg(svg);
+    });
+  })();
+</script>
+
+<style>
+  .housing-chart-shell {
+    width: 100%;
+  }
+
+  .housing-chart-controls {
+    display: inline-flex;
+    align-items: end;
+    gap: 0.65rem;
+    flex-wrap: wrap;
+    padding: 0.55rem 0.7rem;
+    margin-bottom: var(--space-lg);
+    border-radius: var(--radius-md);
+    background: var(--color-surface);
+    box-shadow: var(--shadow-card);
+    width: fit-content;
+    max-width: 100%;
+  }
+
+  .housing-chart-filter {
+    display: grid;
+    gap: 0.22rem;
+    min-width: 120px;
+  }
+
+  .housing-chart-filter span {
+    font-size: 0.72rem;
+    color: var(--color-text-muted);
+    line-height: 1;
+  }
+
+  .housing-chart-filter select {
+    font-family: var(--font-body);
+    font-size: 0.88rem;
+    padding: 0.42rem 0.55rem;
+    border-radius: 8px;
+    border: 1px solid color-mix(in srgb, var(--color-text-muted) 30%, transparent);
+    background: var(--color-bg);
+    color: var(--color-text);
+  }
+
+  .housing-chart-card {
+    width: 100%;
+    border-radius: var(--radius-md, 16px);
+    overflow: hidden;
+    background: #f0efec;
+    box-shadow: var(--shadow-card, 0 10px 30px rgba(0, 0, 0, 0.14));
+  }
+
+  .housing-chart-header {
+    padding: 28px 24px 8px 24px;
+    text-align: center;
+  }
+
+  .housing-chart-headline {
+    color: #ff6238;
+    font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    font-size: clamp(2rem, 4vw, 3.4rem);
+    font-weight: 800;
+    line-height: 1.05;
+    letter-spacing: -0.02em;
+  }
+
+  .housing-chart-subheadline {
+    display: none;
+  }
+
+  .housing-chart-legend {
+    margin-top: 16px;
+    display: flex;
+    gap: 20px;
+    justify-content: center;
+    align-items: center;
+    flex-wrap: wrap;
+    color: rgba(35, 35, 35, 0.9);
+    font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    font-size: 0.98rem;
+  }
+
+  .housing-chart-legend-item {
+    display: inline-flex;
+    gap: 10px;
+    align-items: center;
+    color: rgba(35, 35, 35, 0.9);
+  }
+
+  .housing-chart-legend-swatch {
+    width: 18px;
+    height: 18px;
+    border-radius: 4px;
+    display: inline-block;
+  }
+
+  .housing-chart-legend-swatch--rooms {
+    background: #e63ce8;
+  }
+
+  .housing-chart-legend-swatch--suites {
+    background: #3f6fff;
+  }
+
+  .housing-chart-plot-wrap {
+    width: 100%;
+    padding: 0 8px 10px 8px;
+  }
+
+  .housing-chart-svg {
+    width: 100%;
+    height: auto;
+    display: block;
+    background: #f0efec;
+  }
+
+  @media (max-width: 600px) {
+    .housing-chart-controls {
+      display: flex;
+      width: 100%;
+    }
+
+    .housing-chart-filter {
+      min-width: 140px;
+      flex: 1 1 140px;
+    }
+  }
+
+  @media (max-width: 720px) {
+    .housing-chart-header {
+      padding: 22px 14px 4px 14px;
+    }
+
+    .housing-chart-plot-wrap {
+      padding: 0 2px 10px 2px;
+    }
+  }
+</style>

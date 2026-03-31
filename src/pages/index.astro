@@ -1,0 +1,42 @@
+---
+import Layout from '../layouts/Layout.astro';
+import Hero from '../components/Hero.astro';
+import Countdown from '../components/Countdown.astro';
+import HousingData from '../components/HousingData.astro';
+import PlaceholderText1 from '../components/PlaceholderText1.astro';
+import PlaceholderText2 from '../components/PlaceholderText2.astro';
+import PlaceholderText3 from '../components/PlaceholderText3.astro';
+import PlaceholderText4 from '../components/PlaceholderText4.astro';
+import LotteryGraph from '../components/LotteryGraph.astro';
+import PlaceholderMap from '../components/PlaceholderMap.astro';
+import '../styles/global.css';
+---
+
+<Layout title="BDH 2026 Housing Lottery Guide">
+  <main>
+    <Hero />
+    <Countdown />
+    <PlaceholderText1 />
+    <HousingData />
+    <PlaceholderText2 />
+    <LotteryGraph dataUrl="./housing data for website.csv" />
+    <PlaceholderText3 />
+    <PlaceholderText4 />
+  </main>
+
+  <footer class="footer">
+    <div class="container">
+      <p>&copy; 2026 Brown Daily Herald.</p>
+    </div>
+  </footer>
+</Layout>
+
+<style>
+  .footer {
+    text-align: center;
+    padding: var(--space-lg) 0;
+    font-size: 0.82rem;
+    color: var(--color-text-muted);
+    border-top: 1px solid var(--color-bg-dark);
+  }
+</style>
