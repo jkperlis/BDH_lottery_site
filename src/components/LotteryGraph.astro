@@ -42,7 +42,7 @@ if (!dataUrl) {
           <span>Group size</span>
           <select id="housing-chart-filter-group">
             <option value="1">1</option>
-            <option value="2">2</option>
+            <option value="2" selected>2</option>
             <option value="3">3</option>
             <option value="4">4</option>
             <option value="5">5</option>
@@ -57,7 +57,7 @@ if (!dataUrl) {
         </label>
 
         <label class="housing-chart-filter">
-          <span>Selection time</span>
+          <span>Approximate time</span>
           <select id="housing-chart-filter-time">
             <option value="">Loading…</option>
           </select>
@@ -115,7 +115,7 @@ if (!dataUrl) {
     svg.dataset.initialized = "true";
 
     const COLORS = {
-      bg: "#f0efec",
+      bg: "rgba(236,235,232,1)",
       grid: "rgba(40,40,40,0.12)",
       axis: "rgba(35,35,35,0.82)",
       text: "#202020",
@@ -235,6 +235,8 @@ if (!dataUrl) {
 
     function fmtSelectionLabel(date) {
       const shifted = shiftDateForDisplay(date, DISPLAY_DAY_SHIFT);
+      return "Selection Time "
+/*
       if (!(shifted instanceof Date) || Number.isNaN(shifted.getTime())) return "Selection Time";
       return `Selection Time: ${new Intl.DateTimeFormat(undefined, {
         month: "short",
@@ -242,6 +244,7 @@ if (!dataUrl) {
         hour: "numeric",
         minute: "2-digit"
       }).format(shifted)}`;
+*/
     }
 
    function fmtDayValue(date) {
@@ -1016,7 +1019,7 @@ if (!dataUrl) {
     width: 100%;
     border-radius: var(--radius-md, 16px);
     overflow: hidden;
-    background: #f0efec;
+    background: rgba(236,235,232,1);
     box-shadow: var(--shadow-card, 0 10px 30px rgba(0, 0, 0, 0.14));
   }
 
@@ -1104,7 +1107,7 @@ if (!dataUrl) {
     width: 100%;
     height: auto;
     display: block;
-    background: #f0efec;
+    background: rgba(236,235,232,1);
   }
 
   @media (max-width: 600px) {

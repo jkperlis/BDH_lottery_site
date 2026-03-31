@@ -5,17 +5,22 @@
 <header class="hero">
   <div class="container hero__inner">
     <!-- Logo placeholder -->
-    <div class="hero__logo" aria-label="Logo placeholder">
-      <span class="hero__logo-placeholder">LOGO</span>
+    <div class="hero__logo">
+      <img src = "/logo-black.png" alt="Brown Daily Herald logo" class = "hero__logo-image" />
     </div>
 
     <h1 class="hero__title">
-      Brown Daily Herald<br />
+      <!-- Brown Daily Herald<br /> -->
       <span class="hero__highlight">2026 Housing Lottery Guide</span>
     </h1>
 
     <p class="hero__subtitle">
       Everything you need to navigate Brown's three-day housing selection period.
+    </p>
+
+    <p class="hero__byline">
+      <br />
+      Analysis and Website by Nikos Koss, Jasper Perlis, Rahul Sameer, and Lucy Sun
     </p>
 
     <!-- Decorative blueprint-style divider -->
@@ -52,27 +57,22 @@
     to   { opacity: 1; transform: translateY(0); }
   }
 
-  /* Logo placeholder */
   .hero__logo {
-    width: 72px;
-    height: 72px;
-    border-radius: 50%;
-    border: 2px dashed var(--color-accent);
-    display: grid;
-    place-items: center;
+    display: flex;
+    align-items: center;
+    justify-content: center;
     margin-bottom: var(--space-sm);
-    opacity: .55;
   }
-  .hero__logo-placeholder {
-    font-family: var(--font-mono);
-    font-size: 0.65rem;
-    letter-spacing: 0.12em;
-    color: var(--color-accent);
-    text-transform: uppercase;
+
+  .hero__logo-image {
+    display: block;
+    width: 606px;
+    height: auto;
+    object-fit: contain;
   }
 
   .hero__title {
-    font-size: clamp(1.8rem, 4vw + 0.8rem, 3.2rem);
+    font-size: clamp(2.6rem, 4vw + 1.5rem, 3.75rem);
     color: var(--color-accent);
     letter-spacing: -0.02em;
   }
@@ -86,13 +86,26 @@
   }
 
   .hero__subtitle {
-    max-width: 36rem;
+    max-width: 32rem;
     color: var(--color-text-muted);
     font-size: 1.1rem;
   }
 
+  .hero__byline {
+    margin-top: calc(var(--space-xs) * -0.25);
+    color: var(--color-text-muted);
+    font-size: 0.95rem;
+    font-style: italic;
+  }
+
+  @media (max-width: 600px) {
+    .hero__byline {
+      font-size: 0.6rem;
+    }
+  }
+
   .hero__divider {
     width: min(32rem, 90%);
-    margin-top: var(--space-sm);
+    margin-top: calc(var(--space-xs)*0.5);
   }
 </style>

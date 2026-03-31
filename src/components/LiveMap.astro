@@ -980,16 +980,19 @@
   }
 
   @media (max-width: 600px) {
-    .housing-live__map {
-      height: 70vh;
-    }
-
     .housing-live__legend {
       display: none;
     }
 
     .housing-live__time-wrap {
       width: min(344px, calc(100vw - 36px));
+    }
+  }
+
+  @media (max-width: 600px) {
+    .housing-live__map,
+    .housing-live__placeholder {
+      height: 455px;
     }
   }
 </style>
