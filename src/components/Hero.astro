@@ -25,16 +25,14 @@
 
     <!-- Decorative blueprint-style divider -->
     <svg class="hero__divider" viewBox="0 0 600 20" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-      <line x1="0" y1="10" x2="260" y2="10" stroke="var(--color-accent)" stroke-width=".7" stroke-dasharray="4 3" />
-      <polygon points="295,3 305,10 295,17" fill="var(--color-accent-warm)" opacity=".7" />
-      <line x1="340" y1="10" x2="600" y2="10" stroke="var(--color-accent)" stroke-width=".7" stroke-dasharray="4 3" />
+      <line x1="0" y1="10" x2="600" y2="10" stroke="var(--color-accent)" stroke-width=".7" stroke-dasharray="4 3" />
     </svg>
   </div>
 </header>
 
 <style>
   .hero {
-    padding: var(--space-2xl) 0 var(--space-xl);
+    padding: var(--space-2xl) 0 var(--space-lg);
     text-align: center;
     background:
       linear-gradient(
@@ -106,6 +104,6 @@
 
   .hero__divider {
     width: min(32rem, 90%);
-    margin-top: calc(var(--space-xs)*0.5);
+    margin-top: calc(var(--space-md) * -0.5);
   }
 </style>
