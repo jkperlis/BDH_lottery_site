@@ -1,0 +1,998 @@
+---
+/*
+  LiveMap.astro
+  - Shows placeholder until countdown target has passed
+  - Then initializes Leaflet map with slider, legend, and popups
+  - Uses parent controls from HousingData.astro
+*/
+---
+
+<div class="housing-live">
+  <div class="housing-live__placeholder" id="housing-live-placeholder">
+    <p>2026 Housing Data</p>
+    <span>Live data will be available during the three-day housing selection period</span>
+  </div>
+
+  <div class="housing-live__content" id="housing-live-content" style="display:none;">
+    <div class="housing-live__map-wrap">
+      <div id="housing-live-map" class="housing-live__map"></div>
+
+      <div id="housing-live-time-control" class="housing-live__time-wrap">
+        <div id="housing-live-time-label" class="housing-live__time-label">Time: —</div>
+
+        <div class="housing-live__slider-row">
+          <input
+            type="range"
+            id="housing-live-time-slider"
+            min="0"
+            max="0"
+            step="1"
+            value="0"
+          />
+        </div>
+
+        <div class="housing-live__slider-footer">
+          <span id="housing-live-start-date" class="housing-live__slider-date">—</span>
+
+          <div class="housing-live__slider-controls">
+            <button type="button" id="housing-live-prev" class="housing-live__slider-btn" aria-label="Previous">
+              <svg viewBox="0 0 24 24" class="housing-live__slider-icon" aria-hidden="true">
+                <path d="M7 5v14" />
+                <path d="M18 5l-8 7 8 7" />
+              </svg>
+            </button>
+
+            <button type="button" id="housing-live-play" class="housing-live__slider-btn" aria-label="Play/Pause">
+              <svg viewBox="0 0 24 24" class="housing-live__slider-icon housing-live__slider-icon--play" aria-hidden="true">
+                <path class="housing-live__play-shape" d="M8 5l11 7-11 7z" />
+                <g class="housing-live__pause-shape" style="display:none;">
+                  <path d="M8 5v14" />
+                  <path d="M16 5v14" />
+                </g>
+              </svg>
+            </button>
+
+            <button type="button" id="housing-live-next" class="housing-live__slider-btn" aria-label="Next">
+              <svg viewBox="0 0 24 24" class="housing-live__slider-icon" aria-hidden="true">
+                <path d="M17 5v14" />
+                <path d="M6 5l8 7-8 7" />
+              </svg>
+            </button>
+          </div>
+
+          <span id="housing-live-end-date" class="housing-live__slider-date">—</span>
+        </div>
+      </div>
+
+      <div id="housing-live-legend" class="housing-live__legend"></div>
+    </div>
+
+    <p class="housing-live__note" id="housing-live-note">
+      Live data updated throughout the housing selection period.
+    </p>
+  </div>
+</div>
+
+<script>
+  import L from 'leaflet';
+  import 'leaflet/dist/leaflet.css';
+
+  const placeholderEl = document.getElementById('housing-live-placeholder');
+  const contentEl = document.getElementById('housing-live-content');
+
+  function checkCountdown() {
+    const countdown = document.getElementById('countdown');
+    if (!countdown?.dataset.target) return false;
+    return Date.now() >= new Date(countdown.dataset.target).getTime();
+  }
+
+  function revealLiveMap() {
+    placeholderEl?.setAttribute('style', 'display:none;');
+    contentEl?.setAttribute('style', 'display:block;');
+    requestAnimationFrame(() => initLeafletMap());
+  }
+
+  if (checkCountdown()) {
+    revealLiveMap();
+  } else {
+    const pollInterval = setInterval(() => {
+      if (checkCountdown()) {
+        clearInterval(pollInterval);
+        revealLiveMap();
+      }
+    }, 10_000);
+  }
+
+  // --- STATE ---
+
+  let mapInitialised = false;
+  let leafletMap;
+  let dormLayer;
+  let housingData;
+  let timestamps = [];
+  let currentIndex = 0;
+  let labelZoomThreshold = 17.5;
+
+  const genderSelect = document.getElementById('housing-filter-gender');
+  const sizeSelect = document.getElementById('housing-filter-size');
+  const typeSelect = document.getElementById('housing-filter-type');
+  const metricSelect = document.getElementById('housing-filter-metric');
+  const refreshButton = document.getElementById('housing-filter-refresh');
+
+  let metricFilter = metricSelect?.value ?? 'pct';
+  let genderFilter = genderSelect?.value ?? 'ALL';
+  let sizeFilter = sizeSelect?.value ?? 'ALL';
+  let roomTypeFilter = typeSelect?.value ?? 'ALL';
+
+  let playInterval = null;
+  let isPlaying = false;
+
+  // --- FIELD HELPERS ---
+
+  function parseSizeChoice(choice) {
+    if (choice === 'ALL') return { size: 'ALL', isAllSizes: true };
+    return { size: String(choice), isAllSizes: false };
+  }
+
+  function availField(g, sizeChoice, typeChoice) {
+    const { size, isAllSizes } = parseSizeChoice(sizeChoice);
+    if (typeChoice === 'SUITE') {
+      return isAllSizes ? `Avail_S_${g}_ALL` : `Avail_S_${g}_${size}`;
+    }
+    return isAllSizes ? `Avail_${g}_ALL` : `Avail_${g}_${size}`;
+  }
+
+  function totalField(g, sizeChoice, typeChoice) {
+    const { size, isAllSizes } = parseSizeChoice(sizeChoice);
+    if (typeChoice === 'SUITE') {
+      return isAllSizes ? `Total_S_${g}_ALL` : `Total_S_${g}_${size}`;
+    }
+    return isAllSizes ? `Total_${g}_ALL` : `Total_${g}_${size}`;
+  }
+
+  function pctField(g, sizeChoice, typeChoice) {
+    const { size, isAllSizes } = parseSizeChoice(sizeChoice);
+    if (typeChoice === 'SUITE') {
+      return isAllSizes ? `Pct_S_${g}_ALL` : `Pct_S_${g}_${size}`;
+    }
+    return isAllSizes ? `Pct_${g}_ALL` : `Pct_${g}_${size}`;
+  }
+
+  // --- MAP INIT ---
+
+  function initLeafletMap() {
+    if (mapInitialised) return;
+
+    const mapEl = document.getElementById('housing-live-map');
+    if (!mapEl) return;
+
+    const rect = mapEl.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) {
+      requestAnimationFrame(() => initLeafletMap());
+      return;
+    }
+
+    mapInitialised = true;
+
+    const isMobile = window.matchMedia('(max-width: 600px)').matches;
+    const initialCenter = isMobile
+      ? [41.8240, -71.4000]
+      : [41.8264, -71.4010];
+    const initialZoom = isMobile ? 15.6 : 16;
+
+    leafletMap = L.map('housing-live-map', {
+      minZoom: 15,
+      zoomControl: true,
+      zoomSnap: 0,
+      zoomDelta: 0.75,
+      wheelPxPerZoomLevel: 10,
+      zoomAnimation: true,
+      fadeAnimation: true,
+      markerZoomAnimation: true,
+    }).setView(initialCenter, initialZoom);
+
+    // Closest simple Leaflet equivalent to ArcGIS gray-vector look
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png', {
+      subdomains: 'abcd',
+      maxZoom: 20,
+      attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
+    }).addTo(leafletMap);
+
+    fetchHousingData()
+      .then(() => fetch('/dorms.geojson'))
+      .then((r) => r.json())
+      .then((geo) => {
+        dormLayer = L.geoJSON(geo, {
+          style: styleDorm,
+          onEachFeature: onEachDorm,
+        }).addTo(leafletMap);
+
+        updateMap(0);
+
+        const slider = document.getElementById('housing-live-time-slider');
+        slider?.addEventListener('input', function () {
+          stopPlayback();
+          updateMap(Number(this.value));
+        });
+
+        setTimeout(() => {
+          leafletMap.invalidateSize();
+        }, 50);
+      })
+      .catch((err) => {
+        console.error('Error loading live housing map:', err);
+      });
+
+    refreshDormLabels();
+
+    leafletMap.on('zoomend', () => {
+      refreshDormLabels();
+    });  
+  }
+
+  const prevBtn = document.getElementById('housing-live-prev');
+  const nextBtn = document.getElementById('housing-live-next');
+
+  prevBtn?.addEventListener('click', () => {
+    stopPlayback();
+    updateMap(currentIndex - 1);
+    const slider = document.getElementById('housing-live-time-slider');
+    if (slider) slider.value = String(currentIndex);
+  });
+
+  nextBtn?.addEventListener('click', () => {
+    stopPlayback();
+    updateMap(currentIndex + 1);
+    const slider = document.getElementById('housing-live-time-slider');
+    if (slider) slider.value = String(currentIndex);
+  });
+
+  const playBtn = document.getElementById('housing-live-play');
+
+  function syncSliderToIndex() {
+    const slider = document.getElementById('housing-live-time-slider');
+    if (slider) slider.value = String(currentIndex);
+  }
+
+  function stopPlayback() {
+    if (playInterval) {
+      clearInterval(playInterval);
+      playInterval = null;
+    }
+    isPlaying = false;
+    if (playBtn) {
+      playBtn.classList.remove('is-playing');
+    }
+  }
+
+  function startPlayback() {
+    if (!timestamps.length) return;
+
+    isPlaying = true;
+    if (playBtn) {
+      playBtn.classList.add('is-playing');
+    }
+
+    playInterval = setInterval(() => {
+      if (currentIndex >= timestamps.length - 1) {
+        stopPlayback();
+        return;
+      }
+      updateMap(currentIndex + 1);
+      syncSliderToIndex();
+    }, 900);
+  }
+
+  playBtn?.addEventListener('click', () => {
+    if (isPlaying) {
+      stopPlayback();
+    } else {
+      startPlayback();
+    }
+  });
+
+  function fetchHousingData() {
+    return fetch('/housing_output.json')
+      .then((r) => r.json())
+      .then((data) => {
+        housingData = data;
+        timestamps = Object.keys(data).sort();
+
+        const slider = document.getElementById('housing-live-time-slider');
+        if (slider) {
+          slider.max = String(Math.max(timestamps.length - 1, 0));
+          slider.value = String(Math.min(currentIndex, Math.max(timestamps.length - 1, 0)));
+        }
+
+        updateLegend();
+        updateSliderDates();
+      });
+  }
+
+  function updateSliderDates() {
+    if (!timestamps.length) return;
+
+    const startEl = document.getElementById('housing-live-start-date');
+    const endEl = document.getElementById('housing-live-end-date');
+
+    const fmt = new Intl.DateTimeFormat('en-US', {
+      month: 'numeric',
+      day: 'numeric',
+      year: 'numeric',
+    });
+
+    if (startEl) startEl.textContent = fmt.format(new Date(timestamps[0]));
+    if (endEl) endEl.textContent = fmt.format(new Date(timestamps[timestamps.length - 1]));
+  }
+
+  // --- FILTERS ---
+
+  genderSelect?.addEventListener('change', (e) => {
+    genderFilter = e.target.value;
+    dormLayer?.setStyle(styleDorm);
+    refreshDormLabels();
+  });
+
+  sizeSelect?.addEventListener('change', (e) => {
+    sizeFilter = e.target.value;
+    dormLayer?.setStyle(styleDorm);
+    refreshDormLabels();
+  });
+
+  typeSelect?.addEventListener('change', (e) => {
+    roomTypeFilter = e.target.value;
+    dormLayer?.setStyle(styleDorm);
+    refreshDormLabels();
+    updateLegend();
+  });
+
+  metricSelect?.addEventListener('change', (e) => {
+    metricFilter = e.target.value;
+    dormLayer?.setStyle(styleDorm);
+    refreshDormLabels();
+    updateLegend();
+  });
+
+  refreshButton?.addEventListener('click', () => {
+    if (!mapInitialised) return;
+    fetchHousingData().then(() => {
+      updateMap(currentIndex);
+    });
+    refreshDormLabels();
+  });
+
+  // --- COLOR HELPERS (aligned to 2025 map) ---
+
+  function getColorPercent(v) {
+    if (isNaN(v) || v < 0) return '#c8c8c8';
+    return v >= 0.9 ? '#1a9850'
+      : v >= 0.8 ? '#66bd63'
+      : v >= 0.7 ? '#a6d96a'
+      : v >= 0.6 ? '#d9ef8b'
+      : v >= 0.5 ? '#fee08b'
+      : v >= 0.4 ? '#fdae61'
+      : v >= 0.3 ? '#fd8d3c'
+      : v >= 0.2 ? '#f46d43'
+      : v >= 0.1 ? '#e85b3b'
+      : '#d73027';
+  }
+
+  function getCountColorBreaks(maxT) {
+    const palette = [
+      '#d73027',
+      '#f46d43',
+      '#fdae61',
+      '#fee08b',
+      '#a6d96a',
+      '#1a9850'
+    ];
+
+    if (!maxT || maxT < 1) maxT = 1;
+
+    if (maxT <= 6) {
+      const out = [];
+      for (let i = 0; i <= maxT; i++) {
+        out.push({
+          min: i,
+          max: i + 0.0001,
+          label: String(i),
+          color: palette[Math.min(i, palette.length - 1)],
+        });
+      }
+      return out;
+    }
+
+    const out = [
+      { min: 0, max: 0.0001, label: '0', color: palette[0] }
+    ];
+
+    const nBins = 5;
+    const step = Math.ceil(maxT / nBins);
+
+    for (let i = 0; i < nBins; i++) {
+      const min = 1 + i * step;
+      let max = 1 + (i + 1) * step - 1;
+      if (i === nBins - 1) max = maxT;
+      if (min > maxT) break;
+
+      out.push({
+        min,
+        max: max + 0.0001,
+        label: min === max ? `${min}` : `${min}–${max}`,
+        color: palette[Math.min(i + 1, palette.length - 1)],
+      });
+    }
+
+    return out;
+  }
+
+  function getMaxCountForSelection() {
+    if (!housingData || !timestamps.length) return 1;
+
+    const aFld = availField(genderFilter, sizeFilter, roomTypeFilter);
+    const tFld = totalField(genderFilter, sizeFilter, roomTypeFilter);
+
+    let maxT = 0;
+    for (const timeKey of timestamps) {
+      const snap = housingData[timeKey];
+      for (const dormName in snap) {
+        const row = snap[dormName];
+        const t = Number(row?.[tFld] ?? 0);
+        if (t > maxT) maxT = t;
+      }
+    }
+
+    return maxT || 1;
+  }
+
+  function getColorCount(v) {
+    if (isNaN(v) || v < 0) return '#c8c8c8';
+
+    const breaks = getCountColorBreaks(getMaxCountForSelection());
+    for (const br of breaks) {
+      if (v >= br.min && v < br.max) return br.color;
+    }
+    return breaks[breaks.length - 1]?.color ?? '#1a9850';
+  }
+
+  // --- DATA LOOKUP ---
+
+  function getRoomCounts(dormName, timeKey) {
+    const snap = housingData?.[timeKey]?.[dormName];
+    if (!snap) return null;
+
+    const aFld = availField(genderFilter, sizeFilter, roomTypeFilter);
+    const tFld = totalField(genderFilter, sizeFilter, roomTypeFilter);
+    const pFld = pctField(genderFilter, sizeFilter, roomTypeFilter);
+
+    const availRaw = snap[aFld];
+    const totalRaw = snap[tFld];
+    const pctRaw = snap[pFld];
+
+    const total = totalRaw == null ? 0 : Number(totalRaw);
+    const avail = availRaw == null ? 0 : Number(availRaw);
+    const pct = pctRaw == null ? null : Number(pctRaw);
+
+    return { avail, total, pct };
+  }
+
+  function getFeatureDormName(feature) {
+    return (
+      feature?.properties?.Property_Name ||
+      feature?.properties?.Building_Name ||
+      feature?.properties?.Building ||
+      ''
+    );
+  }
+
+  function getLabelText(feature) {
+    const name = getFeatureDormName(feature);
+    const counts = getRoomCounts(name, timestamps[currentIndex]);
+
+    if (!counts || counts.total === 0) return '';
+
+    if (metricFilter === 'pct') {
+      const pctText = Math.round(counts.pct ?? 0);
+      return `<span class="housing-live__label-name">${name}</span><span class="housing-live__label-value">${pctText}%</span>`;
+    }
+
+    return `<span class="housing-live__label-name">${name}</span><span class="housing-live__label-value">${counts.avail}</span>`;
+  }
+
+  function refreshDormLabels() {
+    if (!dormLayer || !leafletMap) return;
+
+    const showLabels = leafletMap.getZoom() >= labelZoomThreshold;
+
+    dormLayer.eachLayer((layer) => {
+      const feature = layer.feature;
+      if (!feature) return;
+
+      const labelText = getLabelText(feature);
+
+      if (!showLabels || !labelText) {
+        layer.unbindTooltip();
+        return;
+      }
+
+      layer.bindTooltip(labelText, {
+        permanent: true,
+        direction: 'center',
+        className: 'housing-live__label',
+        opacity: 1,
+      });
+    });
+  }
+
+  // --- STYLING / POPUPS ---
+
+  function styleDorm(feature) {
+    const gray = {
+      weight: 0.6,
+      color: '#c8c8c8',
+      fillColor: '#c8c8c8',
+      fillOpacity: 1
+    };
+
+    if (!housingData || !timestamps.length) return gray;
+
+    const dormName = getFeatureDormName(feature);
+    const counts = getRoomCounts(dormName, timestamps[currentIndex]);
+
+    if (!counts || counts.total === 0) return gray;
+
+    const color = metricFilter === 'pct'
+      ? getColorPercent((counts.pct ?? 0) / 100)
+      : getColorCount(counts.avail);
+
+    return {
+      weight: 0.6,
+      color: '#c8c8c8',
+      fillColor: color,
+      fillOpacity: 1
+    };
+  }
+
+  function formatPopupHTML(name, counts) {
+    if (!counts || counts.total === 0) {
+      return `
+        <div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif; font-size:13px;">
+          <div style="font-weight:700; font-size:14px; margin-bottom:6px;">${name}</div>
+          <div style="color:#666;">No rooms of this type in this building.</div>
+        </div>
+      `;
+    }
+
+    const aTxt = counts.avail.toLocaleString();
+    const tTxt = counts.total.toLocaleString();
+    const pTxt = ((counts.pct ?? 0)).toFixed(1) + '%';
+
+    return `
+      <div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif; font-size:13px;">
+        <div style="font-weight:700; font-size:14px; margin-bottom:8px;">${name}</div>
+        <table style="border-collapse:collapse; width:100%;">
+          <tr>
+            <td style="padding:2px 10px 2px 0; color:#666;">Available</td>
+            <td style="padding:2px 0; font-weight:650;">${aTxt}</td>
+          </tr>
+          <tr>
+            <td style="padding:2px 10px 2px 0; color:#666;">Total</td>
+            <td style="padding:2px 0; font-weight:650;">${tTxt}</td>
+          </tr>
+          <tr>
+            <td style="padding:2px 10px 2px 0; color:#666;">Percent available</td>
+            <td style="padding:2px 0; font-weight:650;">${pTxt}</td>
+          </tr>
+        </table>
+      </div>
+    `;
+  }
+
+  function onEachDorm(feature, layer) {
+    layer.on('click', () => {
+      const name = getFeatureDormName(feature);
+      const counts = getRoomCounts(name, timestamps[currentIndex]);
+
+      layer.bindPopup(formatPopupHTML(name, counts)).openPopup();
+    });
+  }
+
+  // --- MAP UPDATE ---
+
+  function updateMap(index) {
+    if (!timestamps.length) return;
+
+    currentIndex = Math.max(0, Math.min(index, timestamps.length - 1));
+    const time = new Date(timestamps[currentIndex]);
+
+    const label = document.getElementById('housing-live-time-label');
+    if (label) {
+      label.textContent = new Intl.DateTimeFormat(undefined, {
+        timeZone: 'America/New_York',
+        year: 'numeric',
+        month: 'short',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: true
+      }).format(time);
+    }
+
+    dormLayer?.setStyle(styleDorm);
+    refreshDormLabels();
+  }
+
+  // --- LEGEND ---
+
+  function updateLegend() {
+    const el = document.getElementById('housing-live-legend');
+    if (!el) return;
+
+    if (metricFilter === 'pct') {
+      el.innerHTML = "<b>Percent available</b><br>";
+
+      const grades = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9];
+      const labels = ["0–9%", "10–19%", "20–29%", "30–39%", "40–49%", "50–59%", "60–69%", "70–79%", "80–89%", "90–100%"];
+
+      el.innerHTML +=
+        '<div><i style="background:#c8c8c8"></i>No rooms</div>';
+
+      for (let i = 0; i < grades.length; i++) {
+        el.innerHTML +=
+          `<div><i style="background:${getColorPercent(grades[i])}"></i>${labels[i]}</div>`;
+      }
+    } else {
+      el.innerHTML = "<b>Rooms available</b><br>";
+
+      const breaks = getCountColorBreaks(getMaxCountForSelection());
+
+      el.innerHTML +=
+        '<div><i style="background:#c8c8c8"></i>No rooms</div>';
+
+      for (const br of breaks) {
+        el.innerHTML +=
+          `<div><i style="background:${br.color}"></i>${br.label}</div>`;
+      }
+    }
+  }
+
+  // --- PANEL VISIBILITY HANDLING ---
+
+  const yearButtons = document.querySelectorAll('.housing__toggle-btn');
+  yearButtons.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      if (btn.dataset.year === '2026') {
+        setTimeout(() => {
+          if (checkCountdown()) {
+            initLeafletMap();
+            leafletMap?.invalidateSize();
+          }
+        }, 50);
+      }
+    });
+  });
+</script>
+
+<style>
+  .housing-live {
+    position: relative;
+  }
+
+  .housing-live__content {
+    position: relative;
+  }
+
+  .housing-live__map-wrap {
+    position: relative;
+  }
+
+  .housing-live__map {
+    width: 100%;
+    height: 560px;
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    box-shadow: var(--shadow-card);
+    background: var(--color-surface);
+    position: relative;
+  }
+
+  .housing-live__time-wrap {
+    position: absolute;
+    bottom: 12px;
+    left: 12px;
+    z-index: 1000;
+    width: 320px;
+    max-width: calc(100vw - 48px);
+    background: rgba(255, 255, 255, 1);
+    border-radius: 10px;
+    padding: 40px 8px 10px 8px;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.15);
+    border: 1px solid rgba(0,0,0,0.08);
+  }
+
+  .housing-live__time-label {
+    position: absolute;
+    top: 6px;
+    left: 12px;
+    right: 12px;
+    font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    font-size: 17px;
+    font-weight: 700;
+    color: #222;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    line-height: 1.15;
+  }
+
+  .housing-live__slider-row {
+    padding: 0 8px;
+  }
+
+  .housing-live__slider-row input[type='range'] {
+    width: 100%;
+    margin: 0;
+    accent-color: #6b7280;
+  }
+
+  .housing-live__legend {
+    position: absolute;
+    bottom: 28px;
+    right: 16px;
+    z-index: 1000;
+    padding: 10px 12px;
+    background: rgba(255, 255, 255, 1);
+    border-radius: 10px;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.18);
+    border: 1px solid rgba(0, 0, 0, 0.08);
+    font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    font-size: 12px;
+    width: 130px;
+    max-width: min(130px, calc(100vw - 24px));
+    color: #333;
+  }
+
+  .housing-live__legend b {
+    display: block;
+    font-weight: 650;
+    font-size: 12px;
+    margin-bottom: 6px;
+    color: #333;
+  }
+
+  .housing-live__legend-title {
+    font-weight: 650;
+    font-size: 12px;
+    margin-bottom: 6px;
+    color: #333;
+  }
+
+  .housing-live__legend-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .housing-live__legend-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .housing-live__legend-swatch {
+    width: 14px;
+    height: 14px;
+    border-radius: 4px;
+    border: 1px solid #ddd;
+    flex: 0 0 14px;
+  }
+
+  .housing-live__legend-label {
+    font-size: 12px;
+    color: #333;
+  }
+
+  .housing-live__note {
+    margin-top: var(--space-sm);
+    font-size: 0.85rem;
+    color: var(--color-text-muted);
+    font-style: italic;
+    text-align: center;
+  }
+
+  .housing-live__placeholder {
+    background: var(--color-surface);
+    border: 2px dashed var(--color-bg-dark);
+    border-radius: var(--radius-md);
+    height: 560px;
+    display: grid;
+    place-items: center;
+    text-align: center;
+    color: var(--color-text-muted);
+  }
+
+  .housing-live__placeholder p {
+    font-family: var(--font-heading);
+    font-size: 1.3rem;
+    color: var(--color-accent);
+  }
+
+  .housing-live__placeholder span {
+    font-size: 0.85rem;
+    opacity: 0.7;
+    margin-top: var(--space-xs);
+    display: block;
+  }
+
+  .housing-live__slider-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 6px 8px 2px 8px;
+  }
+
+  .housing-live__slider-date {
+    font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    font-size: 12px;
+    font-weight: 600;
+    color: #444;
+    white-space: nowrap;
+  }
+
+  .housing-live__slider-controls {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .housing-live__slider-btn {
+    border: none;
+    background: transparent;
+    color: #6f6f6f;
+    cursor: pointer;
+    padding: 2px;
+    border-radius: 6px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: color 120ms ease, background-color 120ms ease, opacity 120ms ease;
+  }
+
+  .housing-live__slider-btn:hover {
+    color: #303030;
+    background: rgba(0, 0, 0, 0.04);
+  }
+
+  .housing-live__slider-btn:active {
+    transform: translateY(0.5px);
+  }
+
+  .housing-live__slider-icon {
+    width: 24px;
+    height: 24px;
+    stroke: currentColor;
+    stroke-width: 1.5;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    fill: none;
+  }
+
+  .housing-live__slider-icon--play .housing-live__play-shape {
+    fill: currentColor;
+    stroke: none;
+  }
+
+  .housing-live__slider-btn.is-playing .housing-live__play-shape {
+    display: none;
+  }
+
+  .housing-live__slider-btn.is-playing .housing-live__pause-shape {
+    display: block !important;
+  }
+
+  :global(.leaflet-popup-content-wrapper) {
+    border-radius: 10px;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.18);
+  }
+
+  :global(.leaflet-popup-content) {
+    margin: 10px 12px;
+  }
+
+  :global(.housing-live__legend i) {
+    width: 14px;
+    height: 14px;
+    border-radius: 4px;
+    border: 1px solid #ddd;
+    display: inline-block;
+    flex: 0 0 14px;
+  }
+
+  :global(.housing-live__legend div) {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin-bottom: 3.8px;
+  }
+
+  :global(.housing-live__label) {
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    color: rgba(30, 30, 30, 1);
+    font-family: sans-serif;
+    font-size: 14px;
+    font-weight: 700;
+    line-height: 1.1;
+    text-align: center;
+    white-space: normal;
+    max-width: 95px;
+    overflow-wrap: break-word;
+    word-break: normal;
+    pointer-events: none;
+    padding: 0 !important;
+    margin: 0 !important;
+    text-shadow:
+      -1px -1px 0 rgba(255,255,255,0.95),
+      1px -1px 0 rgba(255,255,255,0.95),
+      -1px  1px 0 rgba(255,255,255,0.95),
+      1px  1px 0 rgba(255,255,255,0.95);
+  }
+
+  :global(.leaflet-tooltip.housing-live__label) {
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+  }
+
+  :global(.housing-live__label:before) {
+    display: none !important;
+  }
+
+  :global(.housing-live__label-name),
+  :global(.housing-live__label-value) {
+    display: block;
+    width: 100%;
+    text-align: center;
+  }
+
+  :global(.housing-live__label-value) {
+    margin-top: 1px;
+  }
+
+  :global(.leaflet-top),
+  :global(.leaflet-bottom),
+  :global(.leaflet-control-container),
+  :global(.leaflet-control) {
+    z-index: 2000 !important;
+    pointer-events: auto !important;
+  }
+
+  :global(.leaflet-control-zoom) {
+    z-index: 2100 !important;
+    pointer-events: auto !important;
+  }
+
+  .housing-live__time-wrap,
+  .housing-live__legend {
+    z-index: 1000;
+  }
+
+  @media (max-width: 600px) {
+    .housing-live__legend {
+      display: none;
+    }
+
+    .housing-live__time-wrap {
+      width: min(344px, calc(100vw - 36px));
+    }
+  }
+
+  @media (max-width: 600px) {
+    .housing-live__map,
+    .housing-live__placeholder {
+      height: 455px;
+    }
+  }
+</style>
